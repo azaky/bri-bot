@@ -3,61 +3,359 @@ const { JSDOM } = require('jsdom');
 const Discord = require('discord.js');
 const AsciiTable = require('ascii-table');
 const fs = require('fs');
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
+const { createObjectCsvWriter } = require('csv-writer');
 
 require('dotenv').config();
+
 if (!process.env.COOKIE) {
   console.error('COOKIE envvar is required!');
   process.exit(1);
 }
-
-
-let discord, user;
-
-if (process.env.DISCORD_TOKEN && process.env.DISCORD_USER_ID) {
-  discord = new Discord.Client();
-  discord.login(process.env.DISCORD_TOKEN);
-
-  discord.on('ready', () => {
-    console.log(`Logged in as ${discord.user.tag}!`);
-
-    notify(`Hey there, I'm alive!`);
-  });
-
-  discord.on('message', message => {
-    console.log('got message from', message.author.id, message.content);
-  });
+if (!process.env.DISCORD_TOKEN) {
+  console.error('DISCORD_TOKEN!');
+  process.exit(1);
+}
+if (!process.env.DISCORD_SYSTEM_CHANNEL_ID) {
+  console.error('DISCORD_SYSTEM_CHANNEL_ID envvar is required!');
+  process.exit(1);
 }
 
-const notify = async content => {
+const discord = new Discord.Client();
+discord.login(process.env.DISCORD_TOKEN);
+
+discord.on('ready', async () => {
+  console.log(`Logged in as ${discord.user.tag}!`);
+
+  const systemChannel = await discord.channels.fetch(process.env.DISCORD_SYSTEM_CHANNEL_ID);
+  systemChannel.send(`Hey there, I'm alive!`);
+});
+
+const notify = async (content, to, reportFailure = true) => {
   if (!discord) return;
 
-  if (!user) {
-    console.log('fetching user...');
-    user = await discord.users.fetch(process.env.DISCORD_USER_ID);
-    console.log(user);
+  try {
+    console.log('Sending', to, content);
+    // TODO: Make some queue to avoid network bottleneck.
+    //       But it seems that we need to reach hundreds
+    //       of users before we start to worry about it.
+    const channel = await discord.channels.fetch(to);
+    await channel.send(content);
+  } catch (e) {
+    console.error(`Error notifying ${to}:`, e);
+    if (reportFailure) {
+      notifyError(`Error notifying ${to}: ${e}`, false);
+    }
   }
-
-  await user.send(content);
 };
 
-const notifyError = async error => {
+const notifyError = async (error, reportFailure = true) => {
   const embed = new Discord.MessageEmbed()
     .setColor('red')
     .setTitle('An Error Occurred')
     .setDescription('```bash\n' + `${error}` + '\n```');
-  notify(embed);
+  notify(embed, process.env.DISCORD_SYSTEM_CHANNEL_ID, reportFailure);
 };
 
-let scoreboards = [];
-let last = null;
-let lasttop10 = null;
-const contests = ['People Analytics', 'Cash Ratio Optimization'];
-const teamname = 'K2IV';
+// [{type: 'dm|channel', id: '', subscriptions: ['teams']}]
+let users = [];
+if (fs.existsSync('users.json')) {
+  users = JSON.parse(fs.readFileSync('users.json', 'utf-8'));
+}
 
-const updateScore = async () => {
+const saveUsers = () => {
+  fs.writeFileSync('users.json', JSON.stringify(users, null, 2), 'utf-8');
+};
+
+const getUserById = (id, type) => {
+  let user = users.find(u => u.id === id);
+  let exists = true;
+  if (!user) {
+    user = {id, type, subscriptions: ['top10']}; // subscribe to top10 by default
+    users.push(user);
+    exists = false;
+    saveUsers();
+  }
+  return {user, exists};
+};
+
+const contests = ['People Analytics', 'Cash Ratio Optimization'];
+
+let scoreboards = [];
+let lastFetched = '';
+
+if (fs.existsSync('scoreboards.json')) {
+  ({scoreboards, lastFetched} = JSON.parse(fs.readFileSync('scoreboards.json', 'utf-8')));
+}
+
+const saveScoreboards = () => {
+  fs.writeFileSync('scoreboards.json', JSON.stringify({scoreboards, lastFetched}, null, 2), 'utf-8');
+};
+
+const createTop10Embed = (message, prevScoreboards) => {
+  const currentTop10 = scoreboards.map(scoreboard => scoreboard.slice(0, 10));
+  const prevTop10 = prevScoreboards && prevScoreboards.length && prevScoreboards.map(scoreboard => scoreboard.slice(0, 10));
+  const embed = new Discord.MessageEmbed()
+    .setColor('#008891')
+    .setTitle('Top 10 Leaderboard')
+    .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
+    .setDescription(message || '')
+    .setFooter(`Last fetched at ${lastFetched}`);
+  contests.forEach((title, i) => {
+    // list of changes:
+    // - kicked from top 10 (disqualified or for whatever reason there is)
+    // - someone new moved to the top 10
+    // - someone already in the top 10 improved their score
+    let changes = [];
+    if (prevTop10 && prevTop10[i]) {
+      prevTop10[i].forEach(team => {
+        if (currentTop10[i].findIndex(t => t.name === team.name) === -1) {
+          changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** was out from the top 10`);
+        }
+      });
+      currentTop10[i].forEach(team => {
+        if (prevTop10[i].findIndex(t => t.name === team.name) === -1) {
+          changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** moved up to **rank ${team.rank}** with score of **${team.score}**`);
+        }
+      });
+      currentTop10[i].forEach(team => {
+        const prev = prevTop10[i].find(t => t.name === team.name);
+        if (!prev) return;
+        if (prev.score !== team.score) {
+          if (prev.rank !== team.rank) {
+            changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** improved their score from **${prev.score}** to **${team.score}** and moved to **rank ${team.rank}**`);
+          } else {
+            changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** improved their score from **${prev.score}** to **${team.score}**`);
+          }
+        }
+      });
+      if (changes.length) {
+        changes = [
+          'Updates:',
+          ...changes.map(s => `> ${s}`),
+        ];
+      }
+    }
+    const table = new AsciiTable();
+    table.setHeading('Rank', 'Team Name', 'Score');
+    currentTop10[i].forEach((team, rank) => table.addRow(rank+1, team.name, team.score));
+    embed.addField(title, ['```', table.toString(), '```', ...changes].join('\n'));
+  });
+
+  return embed;
+};
+
+const createTeamEmbed = (teamname, message, prevScoreboards) => {
+  if (teamname === 'top10') {
+    return createTop10Embed(message, prevScoreboards);
+  }
+
+  const current = scoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
+  const prev = prevScoreboards && prevScoreboards.length && prevScoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
+
+  const updates = current.map((result, i) => {
+    if (!result) return {name: contests[i], value: ''};
+
+    const changes = [];
+    if (prev && prev[i]) {
+      if (result.rank < prev[i].rank) {
+        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved up the leaderboard from **rank ${prev[i].rank}** to **rank ${result.rank}**!`);
+      }
+      if (result.rank > prev[i].rank) {
+        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved down the leaderboard from **rank ${prev[i].rank}** to **rank ${result.rank}** 😔`);
+      }
+      if (result.score > prev[i].score) {
+        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score improved from **${prev[i].score}** to **${result.score}**!`);
+      }
+      if (result.score < prev[i].score) {
+        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score decreased from **${prev[i].score}** to **${result.score}** ... but ... how ...?`);
+      }
+    } else {
+      changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** is on **rank ${result.rank}** of ${scoreboards[i].length} with score **${result.score}**.`);
+    }
+    if (changes.length > 0) {
+      changes.push(`> Submission Date: ${result.timestamp}`);
+    }
+    return {
+      name: contests[i],
+      value: changes.join('\n'),
+    };
+  });
+
+  const embed = new Discord.MessageEmbed()
+    .setColor('#008891')
+    .setTitle(`Updates for Team ${teamname}`)
+    .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
+    .setDescription(message || '')
+    .setFooter(`Last fetched at ${lastFetched}`);
+  updates.forEach(update => {
+    if (update.value) {
+      embed.addField(update.name, update.value);
+    } else if (!prevScoreboards) {
+      // If this is new, i.e. just subscribed, then we should let them know that this team is missing.
+      embed.addField(update.name, `Team ${teamname.replace(/\*/g, '\\*')} is not found in this competition.`);
+    }
+  });
+  return embed;
+};
+
+const createHelpEmbed = (welcome = false) => {
+  const embed = new Discord.MessageEmbed()
+    .setColor('#008891')
+    .setTitle('BRI Data Hackathon Leaderboard Bot')
+    .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
+    .setFooter('Disclaimer: this bot is not affiliated with BRI or BRI Data Hackathon.')
+    .addFields(
+      {
+        name: 'sub <teamname>',
+        value: 'Get all rank/score updates on the specified team.',
+      },
+      {
+        name: 'sub top10',
+        value: 'Get all updates on top 10 leaderboard.',
+      },
+      {
+        name: 'unsub <teamname|top10>',
+        value: 'Stop getting updates on the specified team or top 10 leaderboard for "unsub top10".',
+      },
+      {
+        name: 'top10',
+        value: 'Show top 10 leaderboard at any time, without subscribing to realtime updates.',
+      },
+      {
+        name: 'help',
+        value: 'Show this.',
+      },
+      {
+        name: 'Important Links',
+        value: [
+          'Homepage: https://brihackathon.id/',
+          'Rules: https://brihackathon.id/page/syarat-dan-ketentuan',
+          'People Analytics Contest Page: https://www.kaggle.com/c/bri-data-hackathon-pa',
+          'Cash Ratio Optimization Contest Page: https://www.kaggle.com/c/bri-data-hackathon-cr-optimization',
+        ].join('\n'),
+      },
+    );
+  let description = [
+    `All commands below are for direct messages. To use me in your server's channels, mention me before every commands. For example: **<@!${discord.user.id}> sub top10**.`,
+  ];
+  if (welcome) {
+    description = [
+      'Thanks for adding me! I will send you any updates on the changes in the leaderboard. To subscribe to changes to your team, use **sub <teamname>**.',
+      '',
+      ...description,
+    ];
+  }
+  embed.setDescription(description.join('\n'));
+  return embed;
+};
+
+const patterns = {
+  sub: /^\s*(?:sub|subscribe)\s+(.*)\s*$/,
+  unsub: /^\s*(?:unsub|unsubscribe)\s+(.*)\s*$/,
+  top10: /^\s*(?:top10|scoreboard|leaderboard).*$/,
+  help: /^\s*help.*$/,
+};
+
+discord.on('message', async message => {
+  // ignore messages from self
+  if (message.author.id === discord.user.id) return;
+
+  let channelInfo = '{}';
+  if (message.guild) {
+    channelInfo = JSON.stringify({
+      type: 'channel',
+      channel: message.channel.name,
+      channelId: message.channel.id,
+      server: message.guild.name,
+      serverId: message.guild.id,
+      user: message.author.username,
+      user_id: message.author.id,
+    });
+  } else {
+    channelInfo = JSON.stringify({
+      type: 'dm',
+      user: message.author.username,
+      user_id: message.author.id,
+    });
+  }
+  console.log(channelInfo, 'got message:', message.content);
+
+  const type = message.channel.type === 'dm' ? 'dm' : 'channel';
+  const id = message.channel.id;
+
+  let content = message.content;
+
+  // one must mention me to respond in channel
+  const mention = `<@!${discord.user.id}>`;
+  let isMention = content.search(mention) !== -1;
+  if (type === 'channel' && !isMention) return;
+
+  if (isMention) {
+    content = content.replace(new RegExp(mention, 'g'), '');
+  }
+
+  const {user, exists} = getUserById(id, type);
+  if (!exists) {
+    await message.channel.send(createHelpEmbed(true));
+    await message.channel.send(createTop10Embed('You are automatically subscribed to changes to the top 10 leaderboard. To stop receiving updates, send me **unsub top10**'));
+  }
+
+  if (content.match(patterns.sub)) {
+    const team = content.match(patterns.sub)[1];
+    console.log(`User ${id} subscribed to ${team}`);
+    if (!team) return;
+
+    if (user.subscriptions.find(t => t === team)) {
+      await message.channel.send(`You are already subscribed to ${team}`);
+      await message.channel.send(createTeamEmbed(team));
+      return;
+    }
+    user.subscriptions.push(team);
+    saveUsers();
+    await message.channel.send(createTeamEmbed(team, [
+      team === 'top10'
+        ? 'You will be notified on any updates on top 10 leaderboard.'
+        : `You will be notified on any score/rank updates on team ${team}.`,
+      `Send me **unsub ${team}** to unsubscribe`,
+    ].join('\n')));
+  }
+
+  else if (content.match(patterns.unsub)) {
+    const team = content.match(patterns.unsub)[1];
+    console.log(`User ${id} unsubscribed to ${team}`);
+    if (!team) return;
+
+    const idx = user.subscriptions.findIndex(t => t === team);
+    if (idx === -1) {
+      await message.channel.send(`You are not subscribed to team ${team}`);
+    } else {
+      user.subscriptions.splice(idx, 1);
+      saveUsers();
+      if (team === 'top10') {
+        await message.channel.send('You will not get notified on any updates on top 10 leaderboard. To see the top 10 at any time, send me **top10**.');
+      } else {
+        await message.channel.send(`You will not get notified on any updates on team ${team}`);
+      }
+    }
+  }
+
+  else if (content.match(patterns.top10)) {
+    await message.channel.send(createTop10Embed());
+  }
+
+  else if (content.match(patterns.help)) {
+    await message.channel.send(createHelpEmbed());
+  }
+
+  // show help if we get mentioned or in dm but found no matching commands
+  else if ((isMention || type === 'dm') && exists) {
+    await message.channel.send(createHelpEmbed());
+  }
+});
+
+const updateLoop = async () => {
   try {
-    console.log('started fetching...');
+    console.log('started fetching scoreboard...');
 
     const response = await fetch("https://brihackathon.id/dashboard", {
       "headers": {
@@ -87,7 +385,7 @@ const updateScore = async () => {
 
     const content = await response.text();
 
-    console.log('finished fetching');
+    console.log('finished fetching scoreboard');
 
     const dom = new JSDOM(content);
     const document = dom.window.document;
@@ -105,6 +403,9 @@ const updateScore = async () => {
       return;
     }
 
+    lastFetched = new Date().toISOString();
+    const prevScoreboards = scoreboards;
+
     scoreboards = tables.map(
       table => [...table.children[1].children].map(
         tr => ({
@@ -115,113 +416,42 @@ const updateScore = async () => {
         })
       )
     );
+    await saveScoreboards();
 
-    const ours = scoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
-    console.log(ours);
+    // Notify individual teams subscriptions.
+    // Not proud of this; current and prev here are just for comparison,
+    // and they will be calculated again in createTeamEmbed.
+    // But it should not matter unless there are thousands of users so yeah whatever.
+    users.forEach(user => {
+      user.subscriptions.forEach(teamname => {
+        if (teamname === 'top10') return;
+        const current = scoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
+        const prev = prevScoreboards && prevScoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
 
-    const timestamp = new Date().toISOString();
-
-    // perhaps there should be a better way to do this
-    const serialized = JSON.stringify(ours);
-    if (JSON.stringify(last) !== serialized) {
-        const updates = ours.map((result, i) => {
-        const changes = [];
-        if (last) {
-          if (result.rank < last[i].rank) {
-            changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved up the leaderboard from **rank ${last[i].rank}** to **rank ${result.rank}**!`);
-          }
-          if (result.rank > last[i].rank) {
-            changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved down the leaderboard from **rank ${last[i].rank}** to **rank ${result.rank}** 😔`);
-          }
-          if (result.score > last[i].score) {
-            changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score improved from **${last[i].score}** to **${result.score}**!`);
-          }
-          if (result.score < last[i].score) {
-            changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score decreased from **${last[i].score}** to **${result.score}** ... but ... how ...?`);
-          }
-        } else {
-          changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** is on **rank ${result.rank}** of ${scoreboards[i].length} with score **${result.score}**`);
-        }
-        if (changes.length > 0) {
-          changes.push(`> Submission Date: ${result.timestamp}`);
-        }
-        return {
-          name: contests[i],
-          value: changes.join('\n'),
-        };
-      });
-      const message = new Discord.MessageEmbed()
-        .setColor('#008891')
-        .setTitle('Rank Notification')
-        .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
-        .setDescription('')
-        .setFooter(`scoreboard fetched at ${timestamp}`);
-      updates.forEach(update => {
-        if (update.value) {
-          message.addField(update.name, update.value);
+        if (JSON.stringify(current) !== JSON.stringify(prev)) {
+          notify(createTeamEmbed(teamname, '', prevScoreboards), user.id);
         }
       });
-      await notify(message);
-      last = ours;
-    }
+    });
 
-    const top10 = scoreboards.map(scoreboard => scoreboard.slice(0, 10));
-    const top10serialized = JSON.stringify(top10);
-    if (top10serialized !== JSON.stringify(lasttop10)) {
-      const message = new Discord.MessageEmbed()
-        .setColor('#008891')
-        .setTitle('Top 10 Leaderboard')
-        .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
-        .setDescription('')
-        .setFooter(`scoreboard fetched at ${timestamp}`);
-      contests.forEach((title, i) => {
-        // list of changes:
-        // - kicked from top 10 (disqualified or for whatever reason there is)
-        // - someone new moved to the top 10
-        // - someone already in the top 10 improved their score
-        let changes = [];
-        if (lasttop10 && lasttop10[i]) {
-          lasttop10[i].forEach(team => {
-            if (top10[i].findIndex(t => t.name === team.name) === -1) {
-              changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** was out from the top 10`);
-            }
-          });
-          top10[i].forEach(team => {
-            if (lasttop10[i].findIndex(t => t.name === team.name) === -1) {
-              changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** moved up to **rank ${team.rank}** with score of **${team.score}**`);
-            }
-          });
-          top10[i].forEach(team => {
-            const prev = lasttop10[i].find(t => t.name === team.name);
-            if (!prev) return;
-            if (prev.score !== team.score) {
-              if (prev.rank !== team.rank) {
-                changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** improved their score from **${prev.score}** to **${team.score}** and moved to **rank ${team.rank}**`);
-              } else {
-                changes.push(`Team **${team.name.replace(/\*/g, '\\*')}** improved their score from **${prev.score}** to **${team.score}**`);
-              }
-            }
-          });
-          if (changes.length) {
-            changes = [
-              'Updates:',
-              ...changes.map(s => `> ${s}`),
-            ];
-          }
+    // Notify top 10 changes.
+    const currentTop10 = scoreboards.map(scoreboard => scoreboard.slice(0, 10));
+    const prevTop10 = prevScoreboards.map(scoreboard => scoreboard.slice(0, 10));
+
+    if (JSON.stringify(currentTop10) !== JSON.stringify(prevTop10)) {
+      const embed = createTop10Embed('', prevScoreboards);
+      users.forEach(user => {
+        if (user.subscriptions.find(s => s === 'top10')) {
+          notify(embed, user.id);
         }
-        const table = new AsciiTable();
-        table.setHeading('Rank', 'Team Name', 'Score');
-        top10[i].forEach((team, rank) => table.addRow(rank+1, team.name, team.score));
-        message.addField(title, ['```', table.toString(), '```', ...changes].join('\n'));
       });
-      await notify(message);
-      lasttop10 = top10;
 
-      // dumps the scoreboards
-      const escapedTimestamp = timestamp.replace(/\-/g, '').replace(/T/g, '_').replace(/\:/g, '').replace(/\.\d+Z$/g, '');
+      // Dump the scoreboards.
+      const timestamp = lastFetched.replace(/\-/g, '').replace(/T/g, '_').replace(/\:/g, '').replace(/\.\d+Z$/g, '');
       contests.forEach(async (title, i) => {
-        const csvWriter = createCsvWriter({
-          path: `dumps/scoreboard_${title.toLowerCase().replace(/ /g, '_')}_${escapedTimestamp}.csv`,
+        if (JSON.stringify(scoreboards[i]) === JSON.stringify(prevScoreboards[i])) return;
+        const csvWriter = createObjectCsvWriter({
+          path: `dumps/scoreboard_${title.toLowerCase().replace(/ /g, '_')}_${timestamp}.csv`,
           header: [
             {id: 'rank', title: 'rank'},
             {id: 'name', title: 'team_name'},
@@ -234,7 +464,7 @@ const updateScore = async () => {
     }
   } catch (e) {
     console.error('Uncaught exception:', e);
-    notifyError(e);
+    notifyError(`Uncaught Exception: ${e}`);
   }
 };
 
@@ -243,7 +473,5 @@ if (!fs.existsSync('dumps')) {
   fs.mkdirSync('dumps');
 }
 
-updateScore();
-setInterval(() => {
-  updateScore();
-}, 60000);
+updateLoop();
+setInterval(updateLoop, 60000);

@@ -1,3 +1,7 @@
 node_modules/
 .env
 dumps/
+
+# persistence
+users.json
+scoreboards.json
