@@ -136,7 +136,7 @@ const createTop10Embed = (message, prevScoreboards) => {
     }
     const table = new AsciiTable();
     table.setHeading('Rank', 'Team Name', 'Score');
-    currentTop10[i].forEach((team, rank) => table.addRow(rank+1, team.name, team.score));
+    currentTop10[i].forEach((team, rank) => table.addRow(parseInt(team.rank), team.name, team.score));
     embed.addField(title, ['```', table.toString(), '```', ...changes].join('\n'));
   });
 
@@ -172,6 +172,18 @@ const createTeamEmbed = (teamname, message, prevScoreboards) => {
       changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** is on **rank ${result.rank}** of ${scoreboards[i].length} with score **${result.score}**.`);
     }
     if (changes.length > 0) {
+      // Show the leaderboard around this team
+      let rankFrom = parseInt(result.rank) - 4, rankTo = parseInt(result.rank) + 5;
+      while (rankFrom < 1) {
+        rankFrom++; rankTo++;
+      }
+      while (rankTo > scoreboards[i].length) {
+        rankFrom--; rankTo--;
+      }
+      const table = new AsciiTable();
+      table.setHeading('Rank', 'Team Name', 'Score');
+      scoreboards[i].slice(rankFrom-1, rankTo).forEach((team) => table.addRow(parseInt(team.rank), team.name, team.score));
+      changes.push('```', ...table.toString().split('\n'), '```');
       changes.push(`> Submission Date: ${result.timestamp}`);
     }
     return {
