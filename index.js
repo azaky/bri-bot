@@ -28,6 +28,8 @@ discord.on('ready', async () => {
 
   const systemChannel = await discord.channels.fetch(process.env.DISCORD_SYSTEM_CHANNEL_ID);
   systemChannel.send(`Hey there, I'm alive!`);
+
+  discord.user.setActivity('leaderboard | help', { type: 'WATCHING' });
 });
 
 const notify = async (content, to, reportFailure = true) => {
