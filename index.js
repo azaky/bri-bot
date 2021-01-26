@@ -34,7 +34,6 @@ const notify = async (content, to, reportFailure = true) => {
   if (!discord) return;
 
   try {
-    console.log('Sending', to, content);
     // TODO: Make some queue to avoid network bottleneck.
     //       But it seems that we need to reach hundreds
     //       of users before we start to worry about it.
