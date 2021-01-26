@@ -2,6 +2,8 @@ const fetch = require('node-fetch');
 const { JSDOM } = require('jsdom');
 const Discord = require('discord.js');
 const AsciiTable = require('ascii-table');
+const fs = require('fs');
+const createCsvWriter = require('csv-writer').createObjectCsvWriter;
 
 require('dotenv').config();
 if (!process.env.COOKIE) {
@@ -169,19 +171,39 @@ const updateScore = async () => {
         .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
         .setDescription('');
       contests.forEach((title, i) => {
-        const table = new AsciiTable()
+        const table = new AsciiTable();
         table.setHeading('Rank', 'Team Name', 'Score');
         top10[i].forEach((team, rank) => table.addRow(rank+1, team.name, team.score));
         message.addField(title, ['```', table.toString(), '```'].join('\n'));
       });
       await notify(message);
       lasttop10 = top10;
+
+      // dumps the scoreboards
+      const timestamp = new Date().toISOString().replace(/\-/g, '').replace(/T/g, '_').replace(/\:/g, '').replace(/\.\d+Z$/g, '');
+      contests.forEach(async (title, i) => {
+        const csvWriter = createCsvWriter({
+          path: `dumps/scoreboard_${title.toLowerCase().replace(/ /g, '_')}_${timestamp}.csv`,
+          header: [
+            {id: 'rank', title: 'rank'},
+            {id: 'name', title: 'team_name'},
+            {id: 'score', title: 'score'},
+            {id: 'timestamp', title: 'submission_date'},
+          ],
+        });
+        await csvWriter.writeRecords(scoreboards[i]);
+      });
     }
   } catch (e) {
     console.error('Uncaught exception:', e);
     notifyError(e);
   }
 };
+
+// initialize dumps folder
+if (!fs.existsSync('dumps')) {
+  fs.mkdirSync('dumps');
+}
 
 updateScore();
 setInterval(() => {
