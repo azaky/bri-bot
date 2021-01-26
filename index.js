@@ -216,7 +216,6 @@ const updateScore = async () => {
       });
       await notify(message);
       lasttop10 = top10;
-      console.log(lasttop10);
 
       // dumps the scoreboards
       const escapedTimestamp = timestamp.replace(/\-/g, '').replace(/T/g, '_').replace(/\:/g, '').replace(/\.\d+Z$/g, '');
