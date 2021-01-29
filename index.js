@@ -80,6 +80,7 @@ const getUserById = (id, type) => {
 };
 
 const contests = ['People Analytics', 'Cash Ratio Optimization'];
+const evals = ['>', '<'];
 
 let scoreboards = [];
 let lastFetched = '';
@@ -154,21 +155,31 @@ const createTeamEmbed = (teamname, message, prevScoreboards) => {
   const prev = prevScoreboards && prevScoreboards.length && prevScoreboards.map(scoreboard => scoreboard.find(team => team.name === teamname));
 
   const updates = current.map((result, i) => {
-    if (!result) return {name: contests[i], value: ''};
+    if (!result) {
+      // apparently you can get kicked out of the leaderboard, so let's make sure we check that
+      if (prev && prev[i]) {
+        return {
+          name: contests[i],
+          value: `Team **${teamname.replace(/\*/g, '\\*')}** got kicked out from the leaderboard 😔`,
+        };
+      }
+      return {name: contests[i], value: ''};
+    }
 
     const changes = [];
     if (prev && prev[i]) {
-      if (result.rank < prev[i].rank) {
+      if (parseInt(result.rank) < parseInt(prev[i].rank)) {
         changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved up the leaderboard from **rank ${prev[i].rank}** to **rank ${result.rank}**!`);
       }
-      if (result.rank > prev[i].rank) {
+      if (parseInt(result.rank) > parseInt(prev[i].rank)) {
         changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** moved down the leaderboard from **rank ${prev[i].rank}** to **rank ${result.rank}** 😔`);
       }
-      if (result.score > prev[i].score) {
-        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score improved from **${prev[i].score}** to **${result.score}**!`);
-      }
-      if (result.score < prev[i].score) {
-        changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score decreased from **${prev[i].score}** to **${result.score}** ... but ... how ...?`);
+      if (result.score !== prev[i].score) {
+        if ((evals[i] !== '>') ^ (parseFloat(result.score) > parseFloat(prev[i].score))) {
+          changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score improved from **${prev[i].score}** to **${result.score}**!`);
+        } else {
+          changes.push(`Team **${teamname.replace(/\*/g, '\\*')}**'s score decreased from **${prev[i].score}** to **${result.score}** ... but ... how ...?`);
+        }
       }
     } else {
       changes.push(`Team **${teamname.replace(/\*/g, '\\*')}** is on **rank ${result.rank}** of ${scoreboards[i].length} with score **${result.score}**.`);
