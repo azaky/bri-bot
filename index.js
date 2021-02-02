@@ -417,7 +417,8 @@ const updateLoop = async () => {
     const tables = [...document.getElementsByTagName('table')].filter(
       (table) => {
         const header = table.parentElement.previousElementSibling.textContent;
-        return contests.find(s => s === header);
+        const headerheader = table.parentElement.parentElement.parentElement.firstElementChild.firstElementChild.textContent.trim();
+        return headerheader === 'Leaderboard' && contests.find(s => s === header);
       }
     );
 
