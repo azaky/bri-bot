@@ -33,7 +33,7 @@ discord.on('ready', async () => {
 });
 
 const notify = async (content, to, reportFailure = true) => {
-  if (!discord) return;
+  if (!content) return;
 
   try {
     // TODO: Make some queue to avoid network bottleneck.
@@ -91,6 +91,16 @@ if (fs.existsSync('scoreboards.json')) {
 
 const saveScoreboards = () => {
   fs.writeFileSync('scoreboards.json', JSON.stringify({scoreboards, lastFetched}, null, 2), 'utf-8');
+};
+
+let submissions = [];
+
+if (fs.existsSync('submissions.json')) {
+  ({submissions, lastFetched} = JSON.parse(fs.readFileSync('submissions.json', 'utf-8')));
+}
+
+const saveSubmissions = () => {
+  fs.writeFileSync('submissions.json', JSON.stringify({submissions, lastFetched}, null, 2), 'utf-8');
 };
 
 const createTop10Embed = (message, prevScoreboards) => {
@@ -220,6 +230,22 @@ const createTeamEmbed = (teamname, message, prevScoreboards) => {
     }
   });
   return embed;
+};
+
+const createSubmissionsEmbed = (newSubmissions, message) => {
+  if (!newSubmissions || !newSubmissions.length) return;
+
+  const table = new AsciiTable();
+  table.setHeading('Filename', 'Score', 'Timestamp');
+  newSubmissions.forEach(s => table.addRow(s.filename, s.score, s.timestamp));
+
+  return new Discord.MessageEmbed()
+    .setColor('#008891')
+    .setTitle(`New submissions for Team ${process.env.SYSTEM_TEAM_NAME}`)
+    .setThumbnail('https://brihackathon.id/images/logo-bri-hackathon.png')
+    .setDescription(message || `New submissions are just graded for team ${process.env.SYSTEM_TEAM_NAME}.`)
+    .setFooter(`Last fetched at ${lastFetched}`)
+    .addField('People Analytics', '```\n' + table.toString() + '\n```');
 };
 
 const createHelpEmbed = (welcome = false) => {
@@ -413,6 +439,37 @@ const updateLoop = async () => {
 
     const dom = new JSDOM(content);
     const document = dom.window.document;
+
+    // Detect submission changes.
+    // Since we're only able to see our own submissions, we must always send this to system channel only.
+    try {
+      const submissionTable = [...document.getElementsByTagName('table')].find(
+        (table) => {
+          const header = table.parentElement.previousElementSibling.textContent;
+          const headerheader = table.parentElement.parentElement.parentElement.firstElementChild.firstElementChild.textContent.trim();
+          return headerheader === 'Log Submisi' && header === 'People Analytics';
+        }
+      );
+      if (submissionTable) {
+        const prevSubmissions = submissions;
+        submissions = [...submissionTable.children[1].children].map(
+          tr => ({
+            filename: tr.children[1].textContent,
+            score: tr.children[2].textContent,
+            timestamp: tr.children[3].textContent,
+          })
+        );
+        // Assume the submissions can be uniquely identified by timestamp.
+        const newSubmissions = submissions.filter(s => prevSubmissions.findIndex(p => p.timestamp === s.timestamp) === -1);
+        if (newSubmissions.length) {
+          notify(createSubmissionsEmbed(newSubmissions), process.env.DISCORD_SYSTEM_CHANNEL_ID);
+          saveSubmissions();
+        }
+      }
+    } catch (e) {
+      console.error('Uncaught exception on submissions:', e);
+      notifyError(`Uncaught Exception on submissions: ${e}`);
+    }
 
     const tables = [...document.getElementsByTagName('table')].filter(
       (table) => {

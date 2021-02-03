@@ -5,3 +5,4 @@ dumps/
 # persistence
 users.json
 scoreboards.json
+submissions.json
